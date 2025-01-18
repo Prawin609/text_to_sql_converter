@@ -1,0 +1,45 @@
+import traceback
+from flask import Blueprint, request, jsonify
+from app.llm_service import generate_sql_query, generate_meaningful_response
+from app.db_services import generate_results
+from utils.logger import setup_logger
+
+main_blueprint = Blueprint("main", __name__)
+
+logger = setup_logger(__name__)
+
+@main_blueprint.route('/generate-sql', methods=['POST'])
+def generate_sql():
+    try:
+        data = request.json
+        if not data or "question" not in data:
+            return jsonify({"error": "Please provide a question in the request body."}), 400
+
+        question = data["question"]
+        llm_response = generate_sql_query(question)
+
+        if llm_response["query"] == "":
+            return jsonify({
+                "question": question,
+                "summary": llm_response["summary"],
+                "query": "No query generated",
+                "result": []
+            }), 200
+
+        sql_results = generate_results(llm_response["query"])
+
+        # Invoke the small language model to generate a meaningful response
+        meaningful_response = generate_meaningful_response(question, sql_results)
+
+        return jsonify({
+            "question": question,
+            "summary": llm_response["summary"],
+            "query": llm_response["query"],
+            "result": sql_results,
+            "meaningful_response": meaningful_response
+        }), 200
+
+    except Exception as e:
+        logger.error("An error occurred: %s", str(e))
+        logger.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
