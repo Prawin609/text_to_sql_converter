@@ -1,0 +1,96 @@
+from litellm import completion
+from app.config import Config
+import re
+from utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
+#read from schema
+with open("complete_schema_with_data.sql") as f:
+    schema = f.read()
+
+additional_context = {
+    "table names and column names are usually singular. "
+    "column names with multiple words are separated by underscores. "
+}
+
+context = (
+    "You are an AI assistant that generates SQL queries based on user input. "
+    "Given a question about data, you will generate the corresponding SQL query to fetch "
+    "the requested data from the database. "
+    f"Additional context: {additional_context} "
+    f"Database Schema: {schema}"
+)
+
+def generate_sql_query(question):
+    logger.info(f"Received qiestion: {question}")
+    response = completion(
+        provider="huggingface",
+        model="huggingface/mistralai/Mistral-7B-Instruct-v0.3",
+        messages=[
+            {"content": context, "role": "database admin"},
+            {"content": question, "role": "user"}
+        ],
+        api_key=Config.API_KEY,
+        stream=False,
+        temperature=0.1,
+        max_tokens=500,
+        top_p=0.1,
+        top_k=20
+    )
+
+    sql_query = response['choices'][0]['message']['content'].strip()
+    logger.info(f"Raw response: {sql_query}")
+    match = re.search(r"(SELECT[^;]*;)", sql_query, re.DOTALL)
+
+    if match:
+        final_query = match.group(0).strip()
+        logger.info(f"Generated SQL query: {final_query}")
+        return {"query": final_query, "summary": sql_query}
+    else:
+        logger.info("No SQL query found in the response")
+        return {"query": "", "summary": sql_query}
+
+
+def generate_meaningful_response(question: str, sql_results: list) -> str:
+    """
+    Generate a meaningful response using a small language model (google/flan-t5-small).
+
+    :param question: The input question in natural language.
+    :param sql_results: The results of the SQL query execution.
+    :return: A meaningful natural language response.
+    """
+    try:
+        # Prepare context from SQL results
+        context = "SQL Results:\n"
+        if not sql_results:
+            context += "No data found."
+        else:
+            for row in sql_results:
+                context += f"{row}\n"
+
+        # Use the lite_llm framework to generate the response
+        response = completion(
+            provider="huggingface",
+            model="huggingface/google/flan-t5-small",  # Appropriate lightweight model for summarization/QA
+            messages=[
+                {"content": context, "role": "meaningful text response generator"},
+                {"content": question, "role": "user"}
+            ],
+            api_key=Config.API_KEY,
+            stream=False,
+            temperature=0.1,
+            max_tokens=100,  # Adjust max_tokens as needed
+            top_p=0.1,
+            top_k=20
+        )
+
+        # Extract and return the response content
+        if "content" in response and response["content"]:
+            return response["content"]
+        else:
+            return "The model did not return a valid response."
+
+    except Exception as e:
+        logger.error("Error in generating meaningful response using lite_llm: %s", str(e))
+        raise
